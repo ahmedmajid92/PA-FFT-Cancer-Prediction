@@ -81,20 +81,57 @@ class GeneDataProcessor:
             # Start with assumption that index contains gene symbols or we can treat them as such for intersection.
             
             genes = df.index.astype(str).tolist()
-            # Clean genes (remove quotes if any)
+            # Clean genes
             genes = [g.replace('"', '').strip() for g in genes]
             
-            # Check for probe ID pattern (e.g., "1007_s_at" or starting with digits)
+            # Check for probe IDs
             sample_genes = genes[:10]
-            if any(g.endswith('_at') or (g[0].isdigit() and '_' in g) for g in sample_genes if g):
-                print("WARNING: Detected potential Probe IDs in GSE data (e.g., '1007_s_at').")
-                print("         Intersection with Gene Symbols (TCGA/Mendeley) will likely be zero.")
-                print("         A platform mapping (Probe -> Gene) is required but not found in the file.")
+            is_probe = any(g.endswith('_at') or (g[0].isdigit() and '_' in g) for g in sample_genes if g)
+            
+            if is_probe:
+                print("Detected probe IDs in GSE data. Mapping to Gene Symbols using mygene...")
+                import mygene
+                mg = mygene.MyGeneInfo()
 
-            print(f"GSE: Loaded {len(genes)} genes/probes.")
+                # Query mygene with manual batching
+                all_results = []
+                batch_size = 1000
+                total_probes = len(genes)
+                print(f"Querying {total_probes} probes in batches of {batch_size}...")
+
+                for i in range(0, total_probes, batch_size):
+                    batch = genes[i:i+batch_size]
+                    try:
+                        res = mg.querymany(batch, scopes='reporter', fields='symbol', species='human', verbose=False)
+                        all_results.extend(res)
+                        print(f"Processed batch {i//batch_size + 1}/{(total_probes + batch_size - 1)//batch_size}")
+                    except Exception as e:
+                        print(f"Error querying batch {i}: {e}. Retrying once...")
+                        import time
+                        time.sleep(2)
+                        try:
+                            res = mg.querymany(batch, scopes='reporter', fields='symbol', species='human', verbose=False)
+                            all_results.extend(res)
+                        except Exception as e2:
+                             print(f"Failed again: {e2}. Skipping batch.")
+
+                mapped_genes = set()
+                mapped_count = 0
+
+                for res in all_results:
+                    if 'symbol' in res:
+                        mapped_genes.add(res['symbol'])
+                        mapped_count += 1
+
+                print(f"GSE: Mapped {mapped_count} probes to {len(mapped_genes)} unique gene symbols.")
+                return mapped_genes
+
+            print(f"GSE: Loaded {len(genes)} genes/probes (No mapping needed).")
             return set(genes)
         except Exception as e:
             print(f"Error loading GSE: {e}")
+            import traceback
+            traceback.print_exc()
             return set()
 
     def load_tcga(self):
